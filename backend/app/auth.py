@@ -29,6 +29,11 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
+def normalize_email(email: str) -> str:
+    """Normalize email for consistent storage and lookups."""
+    return (email or "").strip().lower()
+
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     """Create a JWT access token."""
     to_encode = data.copy()
@@ -53,7 +58,7 @@ def verify_token(token: str):
 def get_user(email: str):
     """Retrieve a user from the database by email."""
     users_col = get_collection("users")
-    user = users_col.find_one({"email": email})
+    user = users_col.find_one({"email": normalize_email(email)})
     return user
 
 
@@ -62,6 +67,9 @@ def create_user(email: str, username: str, password: str):
     try:
         users_col = get_collection("users")
         
+        email = normalize_email(email)
+        username = (username or "").strip()
+
         # Check if user already exists
         if users_col.find_one({"email": email}):
             return None
@@ -92,7 +100,7 @@ def update_last_login(email: str):
     """Update the last login time for a user."""
     users_col = get_collection("users")
     users_col.update_one(
-        {"email": email},
+        {"email": normalize_email(email)},
         {"$set": {"last_login": datetime.utcnow()}}
     )
 
@@ -117,14 +125,26 @@ def create_admin_user():
         users_col = get_collection("users")
         
         # Check if admin user already exists
-        admin_email = "admin@cybershield.com"
+        admin_email = normalize_email("admin@cybershield.com")
+        admin_password = "Admin123!"
         existing_user = users_col.find_one({"email": admin_email})
         if existing_user:
-            print(f"Admin user already exists: {existing_user['email']}")
-            return
+            updates = {
+                "username": "admin",
+                "is_active": True,
+                "role": "admin",
+            }
+
+            stored_hash = existing_user.get("hashed_password")
+            if not stored_hash or not verify_password(admin_password, stored_hash):
+                updates["hashed_password"] = hash_password(admin_password)
+
+            users_col.update_one({"_id": existing_user["_id"]}, {"$set": updates})
+            print(f"Admin user already exists and was verified: {existing_user['email']}")
+            return existing_user["_id"]
         
         # Create admin user
-        hashed_password = hash_password("Admin123!")
+        hashed_password = hash_password(admin_password)
         user_doc = {
             "email": admin_email,
             "username": "admin",

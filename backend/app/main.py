@@ -30,7 +30,15 @@ from app.auth import (  # noqa: E402
     update_last_login,
     get_user_predictions,
     ACCESS_TOKEN_EXPIRE_MINUTES,
-    create_admin_user
+    create_admin_user,
+    normalize_email,
+)
+from app.admin_routes import (  # noqa: E402
+    router as admin_router,
+    init_admin_defaults,
+    apply_pre_scan_rules,
+    log_llm_usage,
+    evaluate_alerts_for_scan,
 )
 
 try:
@@ -49,14 +57,18 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
+        "http://localhost:5174",
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(admin_router)
 
 
 class PredictRequest(BaseModel):
@@ -69,6 +81,7 @@ class PredictRequest(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+    role: Optional[str] = None
 
 
 class TokenData(BaseModel):
@@ -172,23 +185,38 @@ def register(user: UserCreate):
 
 @app.post("/login", response_model=Token)
 def login(user: UserLogin):
-    db_user = get_user(email=user.email)
-    if not db_user or not verify_password(user.password, db_user["hashed_password"]):
+    email = normalize_email(user.email)
+    db_user = get_user(email=email)
+    if not db_user:
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+
+    stored_hash = db_user.get("hashed_password")
+    password_ok = False
+    if stored_hash:
+        password_ok = verify_password(user.password, stored_hash)
+    elif db_user.get("password"):
+        # Backward compatibility for legacy records with plain-text password.
+        password_ok = user.password == db_user.get("password")
+
+    if not password_ok:
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     
     if not db_user.get("is_active", True):
         raise HTTPException(status_code=400, detail="Inactive user")
     
     # Update last login time
-    update_last_login(user.email)
+    update_last_login(email)
     
     # Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    role = (db_user.get("role") or "user").strip().lower()
+    if role == "viewer":
+        role = "analyst"
     access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+        data={"sub": email, "role": role}, expires_delta=access_token_expires
     )
     
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {"access_token": access_token, "token_type": "bearer", "role": role}
 
 
 @app.on_event("startup")

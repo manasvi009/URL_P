@@ -30,7 +30,7 @@ export default function Login({ setIsLoggedIn }) {
       
       // Store token and user email in localStorage
       localStorage.setItem('token', access_token);
-      localStorage.setItem('user_email', formData.email);
+      localStorage.setItem('user_email', formData.email.trim().toLowerCase());
       
       // Update app state
       setIsLoggedIn(true);

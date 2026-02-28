@@ -23,7 +23,7 @@ const AdminPanel = () => {
     if (token) {
       // For now, we'll check if the user is the admin
       // In a real implementation, this would come from the backend
-      const email = localStorage.getItem('user_email');
+      const email = (localStorage.getItem('user_email') || '').trim().toLowerCase();
       setUser({
         id: 'admin-1',
         email: email || 'admin@cybershield.com',
