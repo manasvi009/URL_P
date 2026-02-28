@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import api from '../api/api';
+import adminApi from '../api/adminApi';
 
 export default function Login({ setIsLoggedIn }) {
   const [formData, setFormData] = useState({
@@ -10,6 +11,7 @@ export default function Login({ setIsLoggedIn }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const navigate = useNavigate();
+  const location = useLocation();
 
   const handleChange = (e) => {
     setFormData({
@@ -25,18 +27,20 @@ export default function Login({ setIsLoggedIn }) {
     setError('');
 
     try {
-      const response = await api.post('/login', formData);
-      const { access_token } = response.data;
+      const isAdminLogin = location.pathname.startsWith('/admin');
+      const response = await (isAdminLogin ? adminApi.post('/admin/login', formData) : api.post('/login', formData));
+      const { access_token, role } = response.data;
       
       // Store token and user email in localStorage
       localStorage.setItem('token', access_token);
       localStorage.setItem('user_email', formData.email.trim().toLowerCase());
+      localStorage.setItem('user_role', role || 'user');
       
       // Update app state
       setIsLoggedIn(true);
       
       // Redirect to dashboard
-      navigate('/dashboard');
+      navigate(isAdminLogin ? '/admin/overview' : '/dashboard');
     } catch (error) {
       console.error('Login error:', error);
       setError(error.response?.data?.detail || 'Invalid credentials. Please try again.');

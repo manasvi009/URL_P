@@ -109,6 +109,20 @@ class UserResponse(BaseModel):
     created_at: str
 
 
+class UserSettingsPatch(BaseModel):
+    username: Optional[str] = None
+    bio: Optional[str] = None
+    notifications_email: Optional[bool] = None
+    notifications_push: Optional[bool] = None
+    notifications_security: Optional[bool] = None
+    privacy_data_sharing: Optional[str] = None
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class PredictRequest(BaseModel):
     url: str = Field(..., examples=["https://example.com/login?verify=true"])
     include_features: bool = True
@@ -223,6 +237,7 @@ def login(user: UserLogin):
 async def startup_event():
     """Create admin user on startup."""
     create_admin_user()
+    init_admin_defaults()
 
 
 @app.get("/")
@@ -238,6 +253,112 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "ok", "llm_available": LLM_AVAILABLE}
+
+
+@app.get("/me")
+def me(current_user: dict = Depends(get_current_user)):
+    role = (current_user.get("role") or "user").strip().lower()
+    if role == "viewer":
+        role = "analyst"
+    return {
+        "id": str(current_user.get("_id")),
+        "email": current_user.get("email"),
+        "username": current_user.get("username"),
+        "role": role,
+        "is_active": current_user.get("is_active", True),
+    }
+
+
+@app.get("/user/settings")
+def get_user_settings(current_user: dict = Depends(get_current_user)):
+    return {
+        "username": current_user.get("username", ""),
+        "email": current_user.get("email", ""),
+        "bio": current_user.get("bio", ""),
+        "notifications": {
+            "email": current_user.get("notifications", {}).get("email", True),
+            "push": current_user.get("notifications", {}).get("push", False),
+            "security": current_user.get("notifications", {}).get("security", True),
+        },
+        "privacy": {
+            "data_sharing": current_user.get("privacy", {}).get("data_sharing", "none"),
+        },
+        "security": {
+            "two_factor_enabled": current_user.get("security", {}).get("two_factor_enabled", False),
+        },
+        "updated_at": current_user.get("settings_updated_at"),
+    }
+
+
+@app.patch("/user/settings")
+def update_user_settings(payload: UserSettingsPatch, current_user: dict = Depends(get_current_user)):
+    from app.db.mongo import get_collection
+
+    updates = payload.model_dump(exclude_none=True)
+    set_doc: Dict[str, Any] = {"settings_updated_at": datetime.utcnow().isoformat() + "Z"}
+
+    if "username" in updates:
+        username = (updates["username"] or "").strip()
+        if not username:
+            raise HTTPException(status_code=400, detail="Username cannot be empty")
+        set_doc["username"] = username
+
+    if "bio" in updates:
+        set_doc["bio"] = (updates["bio"] or "").strip()[:500]
+
+    if any(k in updates for k in ["notifications_email", "notifications_push", "notifications_security"]):
+        set_doc["notifications.email"] = bool(updates.get("notifications_email", current_user.get("notifications", {}).get("email", True)))
+        set_doc["notifications.push"] = bool(updates.get("notifications_push", current_user.get("notifications", {}).get("push", False)))
+        set_doc["notifications.security"] = bool(updates.get("notifications_security", current_user.get("notifications", {}).get("security", True)))
+
+    if "privacy_data_sharing" in updates:
+        allowed = {"none", "trusted", "all"}
+        val = (updates["privacy_data_sharing"] or "").strip().lower()
+        if val not in allowed:
+            raise HTTPException(status_code=400, detail="Invalid privacy data sharing value")
+        set_doc["privacy.data_sharing"] = val
+
+    users_col = get_collection("users")
+    res = users_col.update_one({"_id": current_user["_id"]}, {"$set": set_doc})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user = users_col.find_one({"_id": current_user["_id"]})
+    return {
+        "status": "ok",
+        "username": user.get("username", ""),
+        "bio": user.get("bio", ""),
+        "notifications": user.get("notifications", {"email": True, "push": False, "security": True}),
+        "privacy": user.get("privacy", {"data_sharing": "none"}),
+        "updated_at": user.get("settings_updated_at"),
+    }
+
+
+@app.post("/user/change-password")
+def change_password(payload: PasswordChange, current_user: dict = Depends(get_current_user)):
+    from app.db.mongo import get_collection
+    from app.auth import hash_password
+
+    if len(payload.new_password or "") < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=400, detail="New password must be different from current password")
+
+    stored_hash = current_user.get("hashed_password")
+    if not stored_hash or not verify_password(payload.current_password, stored_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+    users_col = get_collection("users")
+    users_col.update_one(
+        {"_id": current_user["_id"]},
+        {
+            "$set": {
+                "hashed_password": hash_password(payload.new_password),
+                "password_changed_at": datetime.utcnow().isoformat() + "Z",
+            }
+        },
+    )
+    return {"status": "ok", "message": "Password updated successfully"}
 
 
 @app.get("/check-admin")
@@ -322,8 +443,9 @@ def predict(req: PredictRequest, current_user: Optional[dict] = Depends(get_curr
     if not url:
         raise HTTPException(status_code=400, detail="URL is required")
 
+    rule_result = apply_pre_scan_rules(url)
     try:
-        result = predict_url(url, threshold=req.threshold)
+        result = rule_result if rule_result else predict_url(url, threshold=req.threshold)
     except FileNotFoundError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
@@ -338,8 +460,10 @@ def predict(req: PredictRequest, current_user: Optional[dict] = Depends(get_curr
                 risk_score=result["risk_score"],
                 features=result["features"],
             )
+            log_llm_usage(url=url, label=result["label"], risk_score=result["risk_score"], success=True)
         except Exception:
             explanation = None
+            log_llm_usage(url=url, label=result["label"], risk_score=result["risk_score"], success=False, error="generation_failed")
 
     payload = {
         "url": url,
@@ -369,6 +493,15 @@ def predict(req: PredictRequest, current_user: Optional[dict] = Depends(get_curr
         saved_id = None
 
     payload["saved_id"] = saved_id
+    if saved_id:
+        try:
+            from bson import ObjectId
+            from app.db.mongo import get_collection
+            saved_doc = get_collection("scans").find_one({"_id": ObjectId(saved_id)})
+            if saved_doc:
+                evaluate_alerts_for_scan(saved_doc)
+        except Exception:
+            pass
     return payload
 
 

@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import adminApi from '../../api/adminApi';
 
 const AdminTopbar = ({ sidebarOpen, setSidebarOpen, user }) => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -14,26 +15,26 @@ const AdminTopbar = ({ sidebarOpen, setSidebarOpen, user }) => {
     { value: '90d', label: 'Last 90 days' }
   ];
 
-  const notifications = [
-    {
-      id: 1,
-      title: 'High-risk scan detected',
-      message: 'Phishing URL with risk score 0.95+ detected',
-      time: '2 minutes ago',
-      severity: 'high'
-    },
-    {
-      id: 2,
-      title: 'New user registered',
-      message: 'New user account created',
-      time: '1 hour ago',
-      severity: 'medium'
+  const [notifications, setNotifications] = useState([]);
+
+  const loadNotifications = async () => {
+    try {
+      const response = await adminApi.get('/admin/alert-logs?limit=8');
+      setNotifications(response.data?.items || []);
+    } catch (error) {
+      console.error('Error loading alert notifications:', error);
+      setNotifications([]);
     }
-  ];
+  };
+
+  useEffect(() => {
+    loadNotifications();
+  }, []);
 
   const handleLogout = () => {
     localStorage.removeItem('token');
-    navigate('/login');
+    localStorage.removeItem('user_role');
+    navigate('/admin/login');
   };
 
   return (
@@ -113,16 +114,16 @@ const AdminTopbar = ({ sidebarOpen, setSidebarOpen, user }) => {
                     </div>
                   ) : (
                     notifications.map((notification) => (
-                      <div key={notification.id} className="p-4 border-b border-slate-700 last:border-b-0 hover:bg-slate-750">
+                      <div key={notification._id} className="p-4 border-b border-slate-700 last:border-b-0 hover:bg-slate-750">
                         <div className="flex items-start">
                           <div className={`flex-shrink-0 mt-1 w-3 h-3 rounded-full ${
                             notification.severity === 'high' ? 'bg-red-500' :
                             notification.severity === 'medium' ? 'bg-yellow-500' : 'bg-blue-500'
                           }`}></div>
                           <div className="ml-3 flex-1">
-                            <h4 className="text-sm font-medium text-white">{notification.title}</h4>
+                            <h4 className="text-sm font-medium text-white">{notification.rule_name || 'Security Alert'}</h4>
                             <p className="text-sm text-slate-300 mt-1">{notification.message}</p>
-                            <p className="text-xs text-slate-500 mt-1">{notification.time}</p>
+                            <p className="text-xs text-slate-500 mt-1">{new Date(notification.timestamp || notification.ts).toLocaleString()}</p>
                           </div>
                         </div>
                       </div>
@@ -130,7 +131,7 @@ const AdminTopbar = ({ sidebarOpen, setSidebarOpen, user }) => {
                   )}
                 </div>
                 <div className="p-3 border-t border-slate-700 text-center">
-                  <button className="text-sm text-blue-400 hover:text-blue-300">
+                  <button className="text-sm text-blue-400 hover:text-blue-300" onClick={loadNotifications}>
                     View all notifications
                   </button>
                 </div>
@@ -170,7 +171,7 @@ const AdminTopbar = ({ sidebarOpen, setSidebarOpen, user }) => {
                   <button 
                     className="w-full text-left px-4 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white"
                     onClick={() => {
-                      navigate('/settings');
+                      navigate('/admin/settings');
                       setShowProfile(false);
                     }}
                   >

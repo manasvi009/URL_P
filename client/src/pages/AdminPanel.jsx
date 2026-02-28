@@ -11,33 +11,38 @@ import AdminRules from '../components/admin/AdminRules';
 import AdminAlerts from '../components/admin/AdminAlerts';
 import AdminAPIKeys from '../components/admin/AdminAPIKeys';
 import AdminSettings from '../components/admin/AdminSettings';
+import api from '../api/api';
+import AdminAuditLogs from '../components/admin/AdminAuditLogs';
 
 const AdminPanel = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
   const location = useLocation();
 
   useEffect(() => {
-    // Get user info from localStorage or API
-    const token = localStorage.getItem('token');
-    if (token) {
-      // For now, we'll check if the user is the admin
-      // In a real implementation, this would come from the backend
-      const email = (localStorage.getItem('user_email') || '').trim().toLowerCase();
-      setUser({
-        id: 'admin-1',
-        email: email || 'admin@cybershield.com',
-        username: 'Admin User',
-        role: email === 'admin@cybershield.com' ? 'admin' : 'user'
-      });
-    }
+    api.get('/me')
+      .then((res) => {
+        setUser(res.data);
+        localStorage.setItem('user_role', res.data?.role || 'user');
+      })
+      .catch(() => setUser(null))
+      .finally(() => setLoading(false));
   }, []);
 
-  // Check if user has admin role
-  const isAdmin = user?.role === 'admin';
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-slate-950">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
 
-  if (!isAdmin) {
-    return <Navigate to="/dashboard" replace />;
+  const canAccessAdmin = ['analyst', 'admin', 'super_admin'].includes(user?.role);
+  const canManageModels = ['admin', 'super_admin'].includes(user?.role);
+
+  if (!canAccessAdmin) {
+    return <Navigate to="/admin/login" replace />;
   }
 
   return (
@@ -61,12 +66,14 @@ const AdminPanel = () => {
             <Route path="/overview" element={<AdminOverview />} />
             <Route path="/scans" element={<AdminScans />} />
             <Route path="/reports" element={<AdminReports />} />
+            <Route path="/reports/:id" element={<AdminReports />} />
             <Route path="/users" element={<AdminUsers />} />
-            <Route path="/models" element={<AdminModels />} />
+            <Route path="/models" element={canManageModels ? <AdminModels /> : <Navigate to="/admin/overview" replace />} />
             <Route path="/rules" element={<AdminRules />} />
             <Route path="/alerts" element={<AdminAlerts />} />
             <Route path="/api-keys" element={<AdminAPIKeys />} />
             <Route path="/settings" element={<AdminSettings />} />
+            <Route path="/audit" element={<AdminAuditLogs />} />
           </Routes>
         </main>
       </div>

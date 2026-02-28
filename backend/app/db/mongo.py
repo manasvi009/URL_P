@@ -18,7 +18,7 @@ def get_collection(collection_name: Optional[str] = None) -> Collection:
 
     uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
     db_name = os.getenv("MONGODB_DB", "url_phishing")
-    default_col_name = os.getenv("MONGODB_COLLECTION", "predictions")
+    default_col_name = os.getenv("MONGODB_COLLECTION", "scans")
     col_name = collection_name or default_col_name
 
     if _client is None:
@@ -36,7 +36,7 @@ def get_collection(collection_name: Optional[str] = None) -> Collection:
         if col_name == "users":
             col.create_index("email", unique=True)
             col.create_index("username", unique=True)
-        elif col_name == "predictions":
+        elif col_name in {"predictions", "scans"}:
             col.create_index("user_id")
             col.create_index("user_email")
     except Exception:

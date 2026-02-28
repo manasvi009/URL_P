@@ -9,20 +9,40 @@ import Settings from "./pages/Settings";
 import History from "./pages/History";
 import AdminPanel from "./pages/AdminPanel";
 import Footer from "./components/Footer";
+import api from "./api/api";
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [userRole, setUserRole] = useState(localStorage.getItem("user_role") || "user");
   
   useEffect(() => {
-    // Check if user is logged in
     const token = localStorage.getItem('token');
     setIsLoggedIn(!!token);
-  }, []);
+    if (token) {
+      api.get("/me")
+        .then((res) => {
+          const role = res.data?.role || "user";
+          localStorage.setItem("user_role", role);
+          setUserRole(role);
+        })
+        .catch(() => {
+          localStorage.removeItem("token");
+          localStorage.removeItem("user_role");
+          setIsLoggedIn(false);
+          setUserRole("user");
+        });
+    } else {
+      setUserRole("user");
+    }
+  }, [isLoggedIn]);
   
   const handleLogout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('user_role');
     setIsLoggedIn(false);
+    setUserRole("user");
   };
+  const canAccessAdmin = ["analyst", "admin", "super_admin"].includes(userRole);
   
   return (
     <Router>
@@ -39,7 +59,9 @@ export default function App() {
                 <Link to="/analytics" className="hover:text-cyan-300 transition-colors">Analytics</Link>
                 <Link to="/history" className="hover:text-cyan-300 transition-colors">History</Link>
                 <Link to="/settings" className="hover:text-cyan-300 transition-colors">Settings</Link>
-                <Link to="/admin/overview" className="hover:text-cyan-300 transition-colors bg-gradient-to-r from-blue-600 to-violet-600 px-3 py-1 rounded-lg">Admin Panel</Link>
+                {canAccessAdmin && (
+                  <Link to="/admin/overview" className="hover:text-cyan-300 transition-colors bg-gradient-to-r from-blue-600 to-violet-600 px-3 py-1 rounded-lg">Admin Panel</Link>
+                )}
                 <button 
                   onClick={handleLogout}
                   className="bg-gradient-to-r from-cyan-600 to-violet-600 hover:from-cyan-700 hover:to-violet-700 px-4 py-2 rounded transition-all duration-300 shadow-lg shadow-cyan-500/25"
@@ -64,9 +86,10 @@ export default function App() {
           <Route path="/analytics" element={isLoggedIn ? <Analytics /> : <Navigate to="/login" />} />
           <Route path="/history" element={isLoggedIn ? <History /> : <Navigate to="/login" />} />
           <Route path="/settings" element={isLoggedIn ? <Settings /> : <Navigate to="/login" />} />
-          <Route path="/admin/*" element={isLoggedIn ? <AdminPanel /> : <Navigate to="/login" />} />
+          <Route path="/admin/*" element={isLoggedIn && canAccessAdmin ? <AdminPanel /> : <Navigate to="/admin/login" />} />
           <Route path="/about" element={<LandingPage />} />
           <Route path="/login" element={!isLoggedIn ? <Login setIsLoggedIn={setIsLoggedIn} /> : <Navigate to="/" />} />
+          <Route path="/admin/login" element={!isLoggedIn ? <Login setIsLoggedIn={setIsLoggedIn} /> : <Navigate to="/admin/overview" />} />
           <Route path="/register" element={!isLoggedIn ? <Register setIsLoggedIn={setIsLoggedIn} /> : <Navigate to="/" />} />
         </Routes>
         

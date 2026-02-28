@@ -83,10 +83,19 @@ const AdminSidebar = ({ sidebarOpen, setSidebarOpen, currentPath }) => {
           <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
         </svg>
       )
+    },
+    {
+      name: 'Audit Logs',
+      href: '/admin/audit',
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+          <path fillRule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clipRule="evenodd" />
+        </svg>
+      )
     }
   ];
 
-  const isActive = (path) => currentPath === path;
+  const isActive = (path) => currentPath === path || currentPath.startsWith(`${path}/`);
 
   return (
     <>
@@ -100,7 +109,7 @@ const AdminSidebar = ({ sidebarOpen, setSidebarOpen, currentPath }) => {
 
       {/* Sidebar */}
       <div 
-        className={`fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 border-r border-slate-700 transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0 ${
+        className={`fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 border-r border-slate-700 transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0 flex flex-col ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
@@ -129,7 +138,7 @@ const AdminSidebar = ({ sidebarOpen, setSidebarOpen, currentPath }) => {
           </button>
         </div>
 
-        <nav className="mt-5 px-2">
+        <nav className="mt-5 px-2 flex-1 overflow-y-auto pb-4">
           <div className="space-y-1">
             {navItems.map((item) => (
               <Link
@@ -151,7 +160,7 @@ const AdminSidebar = ({ sidebarOpen, setSidebarOpen, currentPath }) => {
           </div>
         </nav>
 
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-slate-700">
+        <div className="mt-auto p-4 border-t border-slate-700 shrink-0">
           <div className="text-xs text-slate-500 text-center">
             PhishingAI Admin v1.0
           </div>

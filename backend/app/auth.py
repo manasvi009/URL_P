@@ -84,7 +84,8 @@ def create_user(email: str, username: str, password: str):
             "hashed_password": hashed_password,
             "created_at": datetime.utcnow(),
             "last_login": None,
-            "is_active": True
+            "is_active": True,
+            "role": "user",
         }
         
         # Insert the user
@@ -132,7 +133,7 @@ def create_admin_user():
             updates = {
                 "username": "admin",
                 "is_active": True,
-                "role": "admin",
+                "role": "super_admin",
             }
 
             stored_hash = existing_user.get("hashed_password")
@@ -152,7 +153,7 @@ def create_admin_user():
             "created_at": datetime.utcnow(),
             "last_login": None,
             "is_active": True,
-            "role": "admin"  # Add admin role
+            "role": "super_admin"  # Bootstrap account with full control
         }
         
         result = users_col.insert_one(user_doc)

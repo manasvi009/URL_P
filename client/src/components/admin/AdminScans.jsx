@@ -1,383 +1,179 @@
-import React, { useState, useEffect } from 'react';
-import api from '../../api/api';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import adminApi from '../../api/adminApi';
+import useDebounce from '../../hooks/useDebounce';
+import DataTable from './DataTable';
+import FilterBar from './FilterBar';
+import Pagination from './Pagination';
+import ConfirmDialog from './ConfirmDialog';
+import Toast from './Toast';
 
-const AdminScans = () => {
-  const [scans, setScans] = useState([]);
-  const [filteredScans, setFilteredScans] = useState([]);
+const dateOptions = [
+  { value: 7, label: 'Last 7 days' },
+  { value: 30, label: 'Last 30 days' },
+  { value: 90, label: 'Last 90 days' },
+];
+
+const verdictOptions = ['all', 'normal', 'false_positive', 'confirmed_phishing'];
+
+export default function AdminScans() {
+  const navigate = useNavigate();
+  const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedScans, setSelectedScans] = useState([]);
-  const [filters, setFilters] = useState({
-    label: 'all',
-    minRisk: 0,
-    maxRisk: 1,
-    domain: '',
-    dateRange: '30d'
-  });
+  const [error, setError] = useState('');
+  const [toast, setToast] = useState({ message: '', type: 'info' });
+  const [confirm, setConfirm] = useState({ open: false, title: '', message: '', onConfirm: null });
 
-  // Filter options
-  const labelOptions = [
-    { value: 'all', label: 'All Scans' },
-    { value: 'phishing', label: 'Phishing Only' },
-    { value: 'legitimate', label: 'Legitimate Only' }
-  ];
+  const [days, setDays] = useState(30);
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(20);
+  const [label, setLabel] = useState('all');
+  const [verdict, setVerdict] = useState('all');
+  const [domain, setDomain] = useState('');
+  const [q, setQ] = useState('');
+  const debouncedQ = useDebounce(q, 300);
 
-  useEffect(() => {
-    fetchScans();
-  }, []);
+  const [totalPages, setTotalPages] = useState(1);
 
-  useEffect(() => {
-    applyFilters();
-  }, [scans, filters]);
-
-  const fetchScans = async () => {
+  const load = async () => {
     try {
       setLoading(true);
-      const response = await api.get(`/history?limit=100`);
-      setScans(response.data);
-    } catch (error) {
-      console.error('Error fetching scans:', error);
+      setError('');
+      const res = await adminApi.get('/admin/scans', {
+        params: { days, page, limit, label, verdict, q: debouncedQ, domain },
+      });
+      setRows(res.data?.items || []);
+      setTotalPages(res.data?.pages || 1);
+    } catch (e) {
+      setError(e.response?.data?.detail || 'Failed to load scans');
+      setRows([]);
     } finally {
       setLoading(false);
     }
   };
 
-  const applyFilters = () => {
-    let filtered = [...scans];
+  useEffect(() => { load(); }, [days, page, limit, label, verdict, debouncedQ, domain]);
 
-    // Label filter
-    if (filters.label !== 'all') {
-      filtered = filtered.filter(scan => scan.label === filters.label);
+  const updateVerdict = async (id, newVerdict) => {
+    const prev = rows;
+    setRows((r) => r.map((x) => (x._id === id ? { ...x, verdict: newVerdict } : x)));
+    try {
+      await adminApi.patch(`/admin/scans/${id}`, { verdict: newVerdict });
+      setToast({ message: 'Verdict updated', type: 'success' });
+    } catch (e) {
+      setRows(prev);
+      setToast({ message: e.response?.data?.detail || 'Update failed', type: 'error' });
     }
+  };
 
-    // Risk score filter
-    filtered = filtered.filter(scan => 
-      scan.risk_score >= filters.minRisk && scan.risk_score <= filters.maxRisk
-    );
+  const removeScan = (id) => {
+    setConfirm({
+      open: true,
+      title: 'Delete Scan',
+      message: 'This will permanently delete the scan record.',
+      onConfirm: async () => {
+        setConfirm({ open: false, title: '', message: '', onConfirm: null });
+        const prev = rows;
+        setRows((r) => r.filter((x) => x._id !== id));
+        try {
+          await adminApi.delete(`/admin/scans/${id}`);
+          setToast({ message: 'Scan deleted', type: 'success' });
+        } catch (e) {
+          setRows(prev);
+          setToast({ message: e.response?.data?.detail || 'Delete failed', type: 'error' });
+        }
+      },
+    });
+  };
 
-    // Domain filter
-    if (filters.domain) {
-      filtered = filtered.filter(scan => 
-        scan.url.toLowerCase().includes(filters.domain.toLowerCase())
+  const exportCsv = async () => {
+    try {
+      const res = await adminApi.get('/admin/scans', { params: { days, page: 1, limit: 1000, label, verdict, q: debouncedQ, domain } });
+      const items = res.data?.items || [];
+      const header = ['timestamp', 'url', 'domain', 'label', 'verdict', 'risk_score'];
+      const lines = [header.join(',')].concat(
+        items.map((x) => [x.timestamp || x.ts, JSON.stringify(x.url || ''), x.domain || '', x.label || '', x.verdict || 'normal', x.risk_score ?? 0].join(','))
       );
-    }
-
-    setFilteredScans(filtered);
-  };
-
-  const handleSelectScan = (scanId) => {
-    setSelectedScans(prev => 
-      prev.includes(scanId) 
-        ? prev.filter(id => id !== scanId)
-        : [...prev, scanId]
-    );
-  };
-
-  const handleSelectAll = () => {
-    if (selectedScans.length === filteredScans.length) {
-      setSelectedScans([]);
-    } else {
-      setSelectedScans(filteredScans.map(scan => scan._id));
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `scans_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      setToast({ message: 'Export failed', type: 'error' });
     }
   };
 
-  const handleBulkDelete = async () => {
-    if (!window.confirm(`Delete ${selectedScans.length} selected scans?`)) return;
-    
-    try {
-      // In a real implementation, you'd call a bulk delete API
-      setScans(prev => prev.filter(scan => !selectedScans.includes(scan._id)));
-      setSelectedScans([]);
-    } catch (error) {
-      console.error('Error deleting scans:', error);
-    }
-  };
-
-  const handleBulkFalsePositive = async () => {
-    if (!window.confirm(`Mark ${selectedScans.length} scans as false positive?`)) return;
-    
-    try {
-      // In a real implementation, you'd call a bulk update API
-      setScans(prev => prev.map(scan => 
-        selectedScans.includes(scan._id) 
-          ? { ...scan, label: 'legitimate', risk_score: Math.min(scan.risk_score, 0.3) }
-          : scan
-      ));
-      setSelectedScans([]);
-    } catch (error) {
-      console.error('Error marking as false positive:', error);
-    }
-  };
-
-  const exportToCSV = () => {
-    const csvContent = [
-      ['Timestamp', 'URL', 'Domain', 'Label', 'Risk Score'],
-      ...filteredScans.map(scan => [
-        new Date(scan.timestamp).toISOString(),
-        scan.url,
-        new URL(scan.url).hostname,
-        scan.label,
-        scan.risk_score
-      ])
-    ].map(row => row.join(',')).join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `scans-export-${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
-      </div>
-    );
-  }
+  const columns = useMemo(() => [
+    { key: 'timestamp', title: 'Time', render: (r) => new Date(r.timestamp || r.ts).toLocaleString() },
+    { key: 'url', title: 'URL', render: (r) => <span className="font-mono text-xs break-all">{r.url}</span> },
+    { key: 'label', title: 'Label' },
+    { key: 'verdict', title: 'Verdict', render: (r) => r.verdict || 'normal' },
+    { key: 'risk_score', title: 'Risk', render: (r) => Number(r.risk_score || 0).toFixed(3) },
+    {
+      key: 'actions',
+      title: 'Actions',
+      render: (r) => (
+        <div className="flex gap-2 text-xs">
+          <button className="px-2 py-1 bg-blue-700 text-white rounded" onClick={() => navigate(`/admin/reports/${r._id}`)}>View</button>
+          <button className="px-2 py-1 bg-green-700 text-white rounded" onClick={() => updateVerdict(r._id, 'false_positive')}>False +</button>
+          <button className="px-2 py-1 bg-red-700 text-white rounded" onClick={() => updateVerdict(r._id, 'confirmed_phishing')}>Confirm</button>
+          <button className="px-2 py-1 bg-slate-700 text-white rounded" onClick={() => removeScan(r._id)}>Delete</button>
+        </div>
+      ),
+    },
+  ], [rows]);
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-white">Scan Management</h1>
-          <p className="text-slate-400 mt-2">Monitor and manage all URL scanning activity</p>
+          <p className="text-slate-400 mt-2">Search, review, classify and delete scans</p>
         </div>
-        <div className="flex space-x-3">
-          <button 
-            onClick={fetchScans}
-            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition-all duration-200 flex items-center space-x-2"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            <span>Refresh</span>
-          </button>
+        <button onClick={exportCsv} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg">Export CSV</button>
+      </div>
+
+      <FilterBar>
+        <select value={days} onChange={(e) => { setPage(1); setDays(Number(e.target.value)); }} className="bg-slate-700 border border-slate-600 text-white rounded px-3 py-2">
+          {dateOptions.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
+        </select>
+        <select value={label} onChange={(e) => { setPage(1); setLabel(e.target.value); }} className="bg-slate-700 border border-slate-600 text-white rounded px-3 py-2">
+          <option value="all">All labels</option>
+          <option value="phishing">phishing</option>
+          <option value="legitimate">legitimate</option>
+        </select>
+        <select value={verdict} onChange={(e) => { setPage(1); setVerdict(e.target.value); }} className="bg-slate-700 border border-slate-600 text-white rounded px-3 py-2">
+          {verdictOptions.map((v) => <option key={v} value={v}>{v}</option>)}
+        </select>
+        <input value={domain} onChange={(e) => { setPage(1); setDomain(e.target.value); }} className="bg-slate-700 border border-slate-600 text-white rounded px-3 py-2" placeholder="Domain contains" />
+        <input value={q} onChange={(e) => { setPage(1); setQ(e.target.value); }} className="bg-slate-700 border border-slate-600 text-white rounded px-3 py-2" placeholder="Search URL" />
+      </FilterBar>
+
+      <div className="bg-slate-800/60 border border-slate-700 rounded-xl p-4">
+        {loading && <div className="animate-pulse text-slate-400">Loading scans...</div>}
+        {!loading && error && <div className="bg-red-900/30 border border-red-700 text-red-300 rounded p-3 mb-3">{error}</div>}
+        {!loading && !error && <DataTable columns={columns} rows={rows} emptyText="No scans found for selected filters" />}
+        <div className="flex items-center justify-between mt-4">
+          <select value={limit} onChange={(e) => { setPage(1); setLimit(Number(e.target.value)); }} className="bg-slate-700 border border-slate-600 text-white rounded px-2 py-1 text-sm">
+            <option value={10}>10 / page</option>
+            <option value={20}>20 / page</option>
+            <option value={50}>50 / page</option>
+          </select>
+          <Pagination page={page} pages={totalPages} onPageChange={setPage} />
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700 rounded-2xl p-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Label Filter */}
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">Label</label>
-            <select
-              value={filters.label}
-              onChange={(e) => setFilters(prev => ({ ...prev, label: e.target.value }))}
-              className="w-full bg-slate-700 border border-slate-600 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              {labelOptions.map(option => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Risk Score Range */}
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">Risk Score Range</label>
-            <div className="flex space-x-2">
-              <input
-                type="number"
-                min="0"
-                max="1"
-                step="0.1"
-                value={filters.minRisk}
-                onChange={(e) => setFilters(prev => ({ ...prev, minRisk: parseFloat(e.target.value) }))}
-                className="w-full bg-slate-700 border border-slate-600 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Min"
-              />
-              <input
-                type="number"
-                min="0"
-                max="1"
-                step="0.1"
-                value={filters.maxRisk}
-                onChange={(e) => setFilters(prev => ({ ...prev, maxRisk: parseFloat(e.target.value) }))}
-                className="w-full bg-slate-700 border border-slate-600 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Max"
-              />
-            </div>
-          </div>
-
-          {/* Domain Filter */}
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">Domain</label>
-            <input
-              type="text"
-              value={filters.domain}
-              onChange={(e) => setFilters(prev => ({ ...prev, domain: e.target.value }))}
-              className="w-full bg-slate-700 border border-slate-600 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Filter by domain..."
-            />
-          </div>
-
-          {/* Date Range */}
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">Date Range</label>
-            <select
-              value={filters.dateRange}
-              onChange={(e) => setFilters(prev => ({ ...prev, dateRange: e.target.value }))}
-              className="w-full bg-slate-700 border border-slate-600 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="7d">Last 7 days</option>
-              <option value="30d">Last 30 days</option>
-              <option value="90d">Last 90 days</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      {/* Bulk Actions */}
-      {selectedScans.length > 0 && (
-        <div className="bg-blue-900/20 border border-blue-700 rounded-xl p-4">
-          <div className="flex items-center justify-between">
-            <p className="text-blue-200">
-              {selectedScans.length} scan{selectedScans.length !== 1 ? 's' : ''} selected
-            </p>
-            <div className="flex space-x-3">
-              <button
-                onClick={handleBulkFalsePositive}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all duration-200"
-              >
-                Mark False Positive
-              </button>
-              <button
-                onClick={handleBulkDelete}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-all duration-200"
-              >
-                Delete Selected
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Scans Table */}
-      <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700 rounded-2xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-700 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-white">
-            Recent Scans ({filteredScans.length})
-          </h3>
-          <button
-            onClick={exportToCSV}
-            className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-all duration-200 flex items-center space-x-2"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            <span>Export CSV</span>
-          </button>
-        </div>
-        
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-slate-700">
-            <thead className="bg-slate-750">
-              <tr>
-                <th className="px-6 py-3 text-left">
-                  <input
-                    type="checkbox"
-                    checked={selectedScans.length === filteredScans.length && filteredScans.length > 0}
-                    onChange={handleSelectAll}
-                    className="rounded border-slate-600 text-blue-600 focus:ring-blue-500"
-                  />
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Timestamp</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">URL</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Domain</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Label</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Risk Score</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-700">
-              {filteredScans.length === 0 ? (
-                <tr>
-                  <td colSpan="7" className="px-6 py-12 text-center text-slate-400">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 mx-auto mb-4 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <p>No scans found matching your filters</p>
-                  </td>
-                </tr>
-              ) : (
-                filteredScans.map((scan) => {
-                  const isSelected = selectedScans.includes(scan._id);
-                  const isPhishing = scan.label === 'phishing';
-                  const domain = scan.url ? new URL(scan.url).hostname : 'Unknown';
-                  
-                  return (
-                    <tr 
-                      key={scan._id} 
-                      className={`hover:bg-slate-750/50 transition-colors duration-150 ${isSelected ? 'bg-blue-900/20' : ''}`}
-                    >
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => handleSelectScan(scan._id)}
-                          className="rounded border-slate-600 text-blue-600 focus:ring-blue-500"
-                        />
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-300">
-                        {new Date(scan.timestamp).toLocaleString()}
-                      </td>
-                      <td className="px-6 py-4 max-w-xs">
-                        <div className="flex items-center">
-                          <span className="text-sm text-white font-mono truncate">{scan.url}</span>
-                          <button className="ml-2 text-slate-400 hover:text-white">
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                            </svg>
-                          </button>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-300">
-                        {domain}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                          isPhishing 
-                            ? 'bg-red-500/20 text-red-400 border border-red-500/30' 
-                            : 'bg-green-500/20 text-green-400 border border-green-500/30'
-                        }`}>
-                          {scan.label.toUpperCase()}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <div className="w-24 bg-slate-700 rounded-full h-2 mr-2">
-                            <div 
-                              className={`h-2 rounded-full ${
-                                scan.risk_score > 0.8 ? 'bg-red-500' : 
-                                scan.risk_score > 0.5 ? 'bg-yellow-500' : 'bg-green-500'
-                              }`}
-                              style={{ width: `${scan.risk_score * 100}%` }}
-                            ></div>
-                          </div>
-                          <span className="text-sm text-white font-mono">
-                            {scan.risk_score.toFixed(3)}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                        <div className="flex space-x-2">
-                          <button className="text-blue-400 hover:text-blue-300">View</button>
-                          <button className="text-yellow-400 hover:text-yellow-300">Flag</button>
-                          <button className="text-red-400 hover:text-red-300">Delete</button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <ConfirmDialog
+        open={confirm.open}
+        title={confirm.title}
+        message={confirm.message}
+        onCancel={() => setConfirm({ open: false, title: '', message: '', onConfirm: null })}
+        onConfirm={() => confirm.onConfirm && confirm.onConfirm()}
+      />
+      <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'info' })} />
     </div>
   );
-};
-
-export default AdminScans;
+}
