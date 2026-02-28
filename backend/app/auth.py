@@ -118,8 +118,9 @@ def create_admin_user():
         
         # Check if admin user already exists
         admin_email = "admin@cybershield.com"
-        if users_col.find_one({"email": admin_email}):
-            print("Admin user already exists")
+        existing_user = users_col.find_one({"email": admin_email})
+        if existing_user:
+            print(f"Admin user already exists: {existing_user['email']}")
             return
         
         # Create admin user
@@ -136,5 +137,7 @@ def create_admin_user():
         
         result = users_col.insert_one(user_doc)
         print(f"Admin user created successfully: {admin_email} with ID: {result.inserted_id}")
+        return result.inserted_id  # Return the inserted ID
     except Exception as e:
         print(f"Error creating admin user: {e}")
+        return None

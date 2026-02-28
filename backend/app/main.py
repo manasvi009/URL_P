@@ -212,6 +212,27 @@ def health():
     return {"status": "ok", "llm_available": LLM_AVAILABLE}
 
 
+@app.get("/check-admin")
+def check_admin():
+    """Check if admin user exists."""
+    try:
+        from app.db.mongo import get_collection
+        users_col = get_collection("users")
+        admin_user = users_col.find_one({"email": "admin@cybershield.com"})
+        
+        if admin_user:
+            admin_user["_id"] = str(admin_user["_id"])
+            if isinstance(admin_user.get("created_at"), datetime):
+                admin_user["created_at"] = admin_user["created_at"].isoformat()
+            if isinstance(admin_user.get("last_login"), datetime):
+                admin_user["last_login"] = admin_user["last_login"].isoformat() if admin_user["last_login"] else None
+            return {"exists": True, "user": admin_user}
+        else:
+            return {"exists": False, "message": "Admin user not found"}
+    except Exception as e:
+        return {"exists": False, "error": str(e)}
+
+
 @app.post("/create-admin")
 def create_admin_user_endpoint():
     """Manually create admin user."""
