@@ -183,9 +183,15 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
 def register(user: UserCreate):
     try:
         print(f"Registration attempt for email: {user.email}")
-        user_id = create_user(user.email, user.username, user.password)
-        if user_id is None:
-            raise HTTPException(status_code=400, detail="Email already registered")
+        create_result = create_user(user.email, user.username, user.password)
+        if not create_result.get("ok"):
+            reason = create_result.get("reason")
+            if reason == "email_exists":
+                raise HTTPException(status_code=400, detail="Email already registered")
+            if reason == "username_exists":
+                raise HTTPException(status_code=400, detail="Username already taken")
+            raise HTTPException(status_code=400, detail="User already exists")
+        user_id = create_result["id"]
         
         # Return the created user
         response = UserResponse(

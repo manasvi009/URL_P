@@ -4,6 +4,7 @@ import hashlib
 import secrets
 from argon2 import PasswordHasher
 from jose import JWTError, jwt
+from pymongo.errors import DuplicateKeyError
 from app.db.mongo import get_collection
 from app.db.repo import _normalize_url_for_domain
 
@@ -70,9 +71,13 @@ def create_user(email: str, username: str, password: str):
         email = normalize_email(email)
         username = (username or "").strip()
 
-        # Check if user already exists
+        # Check if user already exists by email
         if users_col.find_one({"email": email}):
-            return None
+            return {"ok": False, "reason": "email_exists"}
+
+        # Check if username is already taken
+        if users_col.find_one({"username": username}):
+            return {"ok": False, "reason": "username_exists"}
         
         # Hash the password
         hashed_password = hash_password(password)
@@ -91,7 +96,16 @@ def create_user(email: str, username: str, password: str):
         # Insert the user
         result = users_col.insert_one(user_doc)
         print(f"User created successfully: {email} with ID: {result.inserted_id}")
-        return str(result.inserted_id)
+        return {"ok": True, "id": str(result.inserted_id)}
+    except DuplicateKeyError as e:
+        # Handle race conditions where a duplicate is inserted between checks.
+        details = getattr(e, "details", {}) or {}
+        key_value = details.get("keyValue", {})
+        if "email" in key_value:
+            return {"ok": False, "reason": "email_exists"}
+        if "username" in key_value:
+            return {"ok": False, "reason": "username_exists"}
+        return {"ok": False, "reason": "duplicate_key"}
     except Exception as e:
         print(f"Error creating user: {e}")
         raise
