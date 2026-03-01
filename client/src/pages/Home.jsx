@@ -22,11 +22,43 @@ export default function Home() {
     setToast(null);
   };
 
+  const predictAsGuest = async (url) => {
+    const baseUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+    const response = await fetch(`${baseUrl}/predict`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (e) {
+      data = null;
+    }
+
+    if (!response.ok) {
+      const message = data?.detail || "Prediction failed";
+      throw new Error(message);
+    }
+
+    return data;
+  };
+
   const fetchHistory = async () => {
+    if (!isLoggedIn) {
+      setHistory([]);
+      return;
+    }
+
     try {
       const res = await api.get("/user/history");
       setHistory(res.data);
     } catch (error) {
+      if (error.response?.status === 401) {
+        setHistory([]);
+        return;
+      }
       console.error("Error fetching history:", error);
       showToast("Failed to load history", "error");
     }
@@ -43,6 +75,14 @@ export default function Home() {
     }
     
     try {
+      if (!isLoggedIn) {
+        const guestResult = await predictAsGuest(url);
+        setResult(guestResult);
+        incrementScanCount();
+        showToast(`URL analyzed successfully. Result: ${guestResult.label}`, guestResult.label === "phishing" ? "warning" : "success");
+        return;
+      }
+
       const res = await api.post("/predict", { url });
       setResult(res.data);
       
@@ -54,14 +94,29 @@ export default function Home() {
       fetchHistory();
       showToast(`URL analyzed successfully. Result: ${res.data.label}`, res.data.label === "phishing" ? "warning" : "success");
     } catch (error) {
+      if (error.response?.status === 401 && getRemainingScans() > 0) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user_role");
+        window.dispatchEvent(new Event("auth-changed"));
+        try {
+          const guestResult = await predictAsGuest(url);
+          setResult(guestResult);
+          incrementScanCount();
+          showToast(`URL analyzed successfully. Result: ${guestResult.label}`, guestResult.label === "phishing" ? "warning" : "success");
+          return;
+        } catch (guestError) {
+          showToast(guestError.message || "An error occurred during prediction", "error");
+          return;
+        }
+      }
       console.error("Error making prediction:", error);
-      showToast(error.response?.data?.detail || "An error occurred during prediction", "error");
+      showToast(error.response?.data?.detail || error.message || "An error occurred during prediction", "error");
     }
   };
 
   useEffect(() => {
     fetchHistory();
-  }, []);
+  }, [isLoggedIn]);
 
   return (
     <div className="dashboard-content py-10 max-w-6xl mx-auto px-4">
@@ -96,7 +151,22 @@ export default function Home() {
       
       <div className="results-section grid grid-cols-1 lg:grid-cols-2 gap-8 mb-10">
         <ResultCard result={result} />
-        <HistoryTable history={history} />
+        {isLoggedIn ? (
+          <HistoryTable history={history} />
+        ) : (
+          <div className="bg-gray-900/50 backdrop-blur-md p-8 rounded-xl border border-cyan-500/30 shadow-lg shadow-cyan-500/10">
+            <h3 className="text-2xl font-bold text-cyan-300 mb-3">History Unlock</h3>
+            <p className="text-cyan-200 mb-4">
+              Sign in to save scan history and view detailed analytics for past URLs.
+            </p>
+            <button
+              onClick={() => navigate('/login')}
+              className="px-5 py-3 bg-gradient-to-r from-cyan-600 to-violet-600 text-white font-semibold rounded-lg hover:from-cyan-700 hover:to-violet-700 transition-all duration-300 shadow-lg shadow-cyan-500/25"
+            >
+              Sign In to View History
+            </button>
+          </div>
+        )}
       </div>
       {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast} />}
     </div>

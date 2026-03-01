@@ -5,6 +5,7 @@ import Analytics from "./pages/Analytics";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import LandingPage from "./pages/LandingPage";
+import About from "./pages/About";
 import Settings from "./pages/Settings";
 import History from "./pages/History";
 import AdminPanel from "./pages/AdminPanel";
@@ -23,11 +24,13 @@ export default function App() {
         .then((res) => {
           const role = res.data?.role || "user";
           localStorage.setItem("user_role", role);
+          window.dispatchEvent(new Event("auth-changed"));
           setUserRole(role);
         })
         .catch(() => {
           localStorage.removeItem("token");
           localStorage.removeItem("user_role");
+          window.dispatchEvent(new Event("auth-changed"));
           setIsLoggedIn(false);
           setUserRole("user");
         });
@@ -39,6 +42,7 @@ export default function App() {
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user_role');
+    window.dispatchEvent(new Event("auth-changed"));
     setIsLoggedIn(false);
     setUserRole("user");
   };
@@ -56,9 +60,12 @@ export default function App() {
               <>
                 <Link to="/" className="hover:text-cyan-300 transition-colors">Home</Link>
                 <Link to="/dashboard" className="hover:text-cyan-300 transition-colors">Dashboard</Link>
-                <Link to="/analytics" className="hover:text-cyan-300 transition-colors">Analytics</Link>
+                {canAccessAdmin && (
+                  <Link to="/analytics" className="hover:text-cyan-300 transition-colors">Analytics</Link>
+                )}
                 <Link to="/history" className="hover:text-cyan-300 transition-colors">History</Link>
                 <Link to="/settings" className="hover:text-cyan-300 transition-colors">Settings</Link>
+                <Link to="/about" className="hover:text-cyan-300 transition-colors">About</Link>
                 {canAccessAdmin && (
                   <Link to="/admin/overview" className="hover:text-cyan-300 transition-colors bg-gradient-to-r from-blue-600 to-violet-600 px-3 py-1 rounded-lg">Admin Panel</Link>
                 )}
@@ -72,6 +79,7 @@ export default function App() {
             ) : (
               <>
                 <Link to="/" className="hover:text-cyan-300 transition-colors">Home</Link>
+                <Link to="/dashboard" className="hover:text-cyan-300 transition-colors">Try Demo</Link>
                 <Link to="/login" className="hover:text-cyan-300 transition-colors">Login</Link>
                 <Link to="/register" className="hover:text-cyan-300 transition-colors">Register</Link>
                 <Link to="/about" className="hover:text-cyan-300 transition-colors">About</Link>
@@ -82,12 +90,12 @@ export default function App() {
 
         <Routes>
           <Route path="/" element={<LandingPage />} />
-          <Route path="/dashboard" element={isLoggedIn ? <Home /> : <Navigate to="/login" />} />
-          <Route path="/analytics" element={isLoggedIn ? <Analytics /> : <Navigate to="/login" />} />
+          <Route path="/dashboard" element={<Home />} />
+          <Route path="/analytics" element={isLoggedIn && canAccessAdmin ? <Analytics /> : <Navigate to={isLoggedIn ? "/dashboard" : "/login"} />} />
           <Route path="/history" element={isLoggedIn ? <History /> : <Navigate to="/login" />} />
           <Route path="/settings" element={isLoggedIn ? <Settings /> : <Navigate to="/login" />} />
           <Route path="/admin/*" element={isLoggedIn && canAccessAdmin ? <AdminPanel /> : <Navigate to="/admin/login" />} />
-          <Route path="/about" element={<LandingPage />} />
+          <Route path="/about" element={<About />} />
           <Route path="/login" element={!isLoggedIn ? <Login setIsLoggedIn={setIsLoggedIn} /> : <Navigate to="/" />} />
           <Route path="/admin/login" element={!isLoggedIn ? <Login setIsLoggedIn={setIsLoggedIn} /> : <Navigate to="/admin/overview" />} />
           <Route path="/register" element={!isLoggedIn ? <Register setIsLoggedIn={setIsLoggedIn} /> : <Navigate to="/" />} />

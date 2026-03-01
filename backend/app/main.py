@@ -142,10 +142,13 @@ class PredictResponse(BaseModel):
     saved_id: Optional[str] = None
 
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
-def get_current_user_optional(credentials: HTTPAuthorizationCredentials = Depends(security)):
+def get_current_user_optional(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+    if credentials is None:
+        return None
+
     token = credentials.credentials
     payload = verify_token(token)
     if payload is None:
@@ -159,7 +162,10 @@ def get_current_user_optional(credentials: HTTPAuthorizationCredentials = Depend
     return user
 
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     token = credentials.credentials
     payload = verify_token(token)
     if payload is None:
@@ -438,10 +444,23 @@ def test_db():
 
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(req: PredictRequest, current_user: Optional[dict] = Depends(get_current_user_optional)):
+def predict(req: PredictRequest, request: Request):
     url = (req.url or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="URL is required")
+
+    # Public endpoint: optionally associate scan with user if a valid bearer token is present.
+    current_user = None
+    auth_header = request.headers.get("authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            payload = verify_token(token)
+            email = payload.get("sub") if payload else None
+            if email:
+                user = get_user(email=email)
+                if user:
+                    current_user = user
 
     rule_result = apply_pre_scan_rules(url)
     try:

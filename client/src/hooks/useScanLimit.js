@@ -2,19 +2,28 @@ import { useState, useEffect } from 'react';
 
 const useScanLimit = () => {
   const [scanCount, setScanCount] = useState(0);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('token'));
   const MAX_FREE_SCANS = 2;
 
   useEffect(() => {
-    // Check if user is logged in
-    const token = localStorage.getItem('token');
-    setIsLoggedIn(!!token);
-
     // Load scan count from localStorage
     const savedCount = localStorage.getItem('freeScanCount');
     if (savedCount) {
       setScanCount(parseInt(savedCount, 10));
     }
+
+    const syncAuthState = () => {
+      setIsLoggedIn(!!localStorage.getItem('token'));
+    };
+
+    syncAuthState();
+    window.addEventListener('storage', syncAuthState);
+    window.addEventListener('auth-changed', syncAuthState);
+
+    return () => {
+      window.removeEventListener('storage', syncAuthState);
+      window.removeEventListener('auth-changed', syncAuthState);
+    };
   }, []);
 
   const incrementScanCount = () => {

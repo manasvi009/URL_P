@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import './FuturisticHero.css';
 
 const FuturisticHero = () => {
@@ -63,8 +64,8 @@ const FuturisticHero = () => {
         
         {/* Call to Action Buttons */}
         <div className="cta-buttons">
-          <button className="btn-primary">Start Free Trial</button>
-          <button className="btn-secondary">View Demo</button>
+          <Link to="/register" className="btn-primary">Start Free Trial</Link>
+          <Link to="/dashboard" className="btn-secondary">View Demo</Link>
         </div>
         
         {/* Neural Network Visualization */}

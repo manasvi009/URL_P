@@ -25,9 +25,12 @@ api.interceptors.response.use(
     return response;
   },
   (error) => {
-    if (error.response?.status === 401) {
+    const hasToken = !!localStorage.getItem('token');
+    if (error.response?.status === 401 && hasToken) {
       // Clear token and redirect to login
       localStorage.removeItem('token');
+      localStorage.removeItem('user_role');
+      window.dispatchEvent(new Event("auth-changed"));
       window.location.href = '/login';
     }
     return Promise.reject(error);
