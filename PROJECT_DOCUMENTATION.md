@@ -167,6 +167,16 @@ OPENAI_MODEL=gpt-5.2
 MONGODB_URI=mongodb://localhost:27017
 MONGODB_DB=url_phishing
 MONGODB_COLLECTION=predictions
+FRONTEND_URL=http://localhost:5173
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=your_email@gmail.com
+SMTP_PASSWORD=your_app_password
+SMTP_FROM=CyberShield Pro <your_email@gmail.com>
+SMTP_USE_TLS=true
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+# Optional: use only when you need regex-based origin allowlist
+# CORS_ALLOW_ORIGIN_REGEX=^https://([a-z0-9-]+\.)?yourdomain\.com$
 ```
 
 ### Frontend Setup
@@ -210,6 +220,8 @@ npm run build
 ### Authentication
 - `POST /register` - Create new user account
 - `POST /login` - Authenticate user and get JWT token
+- `POST /forgot-password` - Send password reset link to registered email
+- `POST /reset-password` - Reset password using email token
 
 ### URL Analysis
 - `POST /predict` - Analyze URL for phishing risk

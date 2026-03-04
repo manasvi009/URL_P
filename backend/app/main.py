@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
+import hashlib
+import os
+import secrets
+import smtplib
+from email.message import EmailMessage
 
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -32,6 +37,7 @@ from app.auth import (  # noqa: E402
     ACCESS_TOKEN_EXPIRE_MINUTES,
     create_admin_user,
     normalize_email,
+    hash_password,
 )
 from app.admin_routes import (  # noqa: E402
     router as admin_router,
@@ -53,17 +59,36 @@ app = FastAPI(
     version="1.1.0",
     description="Predict phishing URLs using ML + optional LLM explanations + MongoDB history + analytics.",
 )
+
+default_origins = {
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+}
+frontend_url = (os.getenv("FRONTEND_URL", "") or "").strip()
+if frontend_url:
+    default_origins.add(frontend_url.rstrip("/"))
+
+cors_origins_env = (os.getenv("CORS_ORIGINS", "") or "").strip()
+if cors_origins_env:
+    configured_origins = {
+        origin.strip().rstrip("/")
+        for origin in cors_origins_env.split(",")
+        if origin.strip()
+    }
+    allowed_origins = sorted(configured_origins)
+else:
+    allowed_origins = sorted(default_origins)
+
+cors_allow_origin_regex = (os.getenv("CORS_ALLOW_ORIGIN_REGEX", "") or "").strip() or None
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=allowed_origins,
+    allow_origin_regex=cors_allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -120,6 +145,15 @@ class UserSettingsPatch(BaseModel):
 
 class PasswordChange(BaseModel):
     current_password: str
+    new_password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
     new_password: str
 
 
@@ -349,7 +383,6 @@ def update_user_settings(payload: UserSettingsPatch, current_user: dict = Depend
 @app.post("/user/change-password")
 def change_password(payload: PasswordChange, current_user: dict = Depends(get_current_user)):
     from app.db.mongo import get_collection
-    from app.auth import hash_password
 
     if len(payload.new_password or "") < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
@@ -371,6 +404,119 @@ def change_password(payload: PasswordChange, current_user: dict = Depends(get_cu
         },
     )
     return {"status": "ok", "message": "Password updated successfully"}
+
+
+@app.post("/forgot-password")
+def forgot_password(payload: ForgotPasswordRequest):
+    from app.db.mongo import get_collection
+
+    email = normalize_email(payload.email)
+    generic_message = {
+        "status": "ok",
+        "message": "If the account exists, a password reset link has been sent.",
+    }
+    if not email:
+        return generic_message
+
+    user = get_user(email)
+    if not user:
+        return generic_message
+
+    users_col = get_collection("users")
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    expires_at = datetime.utcnow() + timedelta(minutes=30)
+
+    users_col.update_one(
+        {"_id": user["_id"]},
+        {
+            "$set": {
+                "password_reset_token_hash": token_hash,
+                "password_reset_expires_at": expires_at,
+                "password_reset_requested_at": datetime.utcnow().isoformat() + "Z",
+            }
+        },
+    )
+
+    frontend_base = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+    reset_link = f"{frontend_base}/reset-password?token={raw_token}"
+
+    smtp_host = os.getenv("SMTP_HOST", "").strip()
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_username = os.getenv("SMTP_USERNAME", "").strip()
+    smtp_password = os.getenv("SMTP_PASSWORD", "")
+    smtp_from = os.getenv("SMTP_FROM", smtp_username or "no-reply@example.com").strip()
+    smtp_use_tls = os.getenv("SMTP_USE_TLS", "true").strip().lower() == "true"
+
+    if smtp_host and smtp_username and smtp_password:
+        msg = EmailMessage()
+        msg["Subject"] = "CyberShield Pro Password Reset"
+        msg["From"] = smtp_from
+        msg["To"] = email
+        msg.set_content(
+            "We received a request to reset your password.\n\n"
+            f"Click this link to reset your password: {reset_link}\n\n"
+            "This link expires in 30 minutes.\n"
+            "If you did not request this, you can ignore this email."
+        )
+
+        try:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+                if smtp_use_tls:
+                    server.starttls()
+                server.login(smtp_username, smtp_password)
+                server.send_message(msg)
+        except Exception as e:
+            print(f"Failed to send password reset email to {email}: {e}")
+    else:
+        print(
+            "Password reset email not sent because SMTP is not configured. "
+            f"User: {email}, link: {reset_link}"
+        )
+
+    return generic_message
+
+
+@app.post("/reset-password")
+def reset_password(payload: ResetPasswordRequest):
+    from app.db.mongo import get_collection
+
+    token = (payload.token or "").strip()
+    new_password = payload.new_password or ""
+    if not token:
+        raise HTTPException(status_code=400, detail="Reset token is required")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    users_col = get_collection("users")
+    user = users_col.find_one({"password_reset_token_hash": token_hash})
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    expires_at = user.get("password_reset_expires_at")
+    if not isinstance(expires_at, datetime) or datetime.utcnow() > expires_at:
+        users_col.update_one(
+            {"_id": user["_id"]},
+            {"$unset": {"password_reset_token_hash": "", "password_reset_expires_at": ""}},
+        )
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    users_col.update_one(
+        {"_id": user["_id"]},
+        {
+            "$set": {
+                "hashed_password": hash_password(new_password),
+                "password_changed_at": datetime.utcnow().isoformat() + "Z",
+            },
+            "$unset": {
+                "password_reset_token_hash": "",
+                "password_reset_expires_at": "",
+                "password_reset_requested_at": "",
+            },
+        },
+    )
+    return {"status": "ok", "message": "Password has been reset successfully"}
 
 
 @app.get("/check-admin")

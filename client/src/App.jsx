@@ -4,6 +4,8 @@ import Home from "./pages/Home";
 import Analytics from "./pages/Analytics";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 import LandingPage from "./pages/LandingPage";
 import About from "./pages/About";
 import Settings from "./pages/Settings";
@@ -99,6 +101,8 @@ export default function App() {
           <Route path="/login" element={!isLoggedIn ? <Login setIsLoggedIn={setIsLoggedIn} /> : <Navigate to="/" />} />
           <Route path="/admin/login" element={!isLoggedIn ? <Login setIsLoggedIn={setIsLoggedIn} /> : <Navigate to="/admin/overview" />} />
           <Route path="/register" element={!isLoggedIn ? <Register setIsLoggedIn={setIsLoggedIn} /> : <Navigate to="/" />} />
+          <Route path="/forgot-password" element={!isLoggedIn ? <ForgotPassword /> : <Navigate to="/" />} />
+          <Route path="/reset-password" element={!isLoggedIn ? <ResetPassword /> : <Navigate to="/" />} />
         </Routes>
         
         <Footer />
