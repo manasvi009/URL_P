@@ -5,10 +5,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Dict, Tuple, Any, Optional
+from urllib.parse import urlparse
 
 import joblib
 import numpy as np
 import pandas as pd
+import tldextract
 
 from app.feature_extractor import extract_features
 
@@ -19,6 +21,82 @@ MODELS_DIR = BASE_DIR / "models"
 _MODEL: Any = None
 _FEATURE_COLUMNS: Optional[list] = None
 _SCALER = None
+
+
+TRUSTED_DOMAINS = {
+    "google.com", "www.google.com", "youtube.com", "www.youtube.com",
+    "github.com", "www.github.com", "amazon.com", "www.amazon.com",
+    "ebay.com", "www.ebay.com", "stackoverflow.com", "www.stackoverflow.com",
+    "facebook.com", "www.facebook.com", "twitter.com", "www.twitter.com",
+    "linkedin.com", "www.linkedin.com", "reddit.com", "www.reddit.com",
+    "wikipedia.org", "www.wikipedia.org", "apple.com", "www.apple.com",
+    "microsoft.com", "www.microsoft.com", "adobe.com", "www.adobe.com",
+    "oracle.com", "www.oracle.com", "docs.oracle.com", "www.docs.oracle.com",
+    "nytimes.com", "www.nytimes.com", "cnn.com", "www.cnn.com",
+    "bbc.com", "www.bbc.com", "amazonaws.com", "www.amazonaws.com",
+    "cloudflare.com", "www.cloudflare.com",
+}
+TRUSTED_REGISTRABLE_DOMAINS = {d[4:] if d.startswith("www.") else d for d in TRUSTED_DOMAINS}
+
+BRAND_DOMAINS = {
+    "google", "youtube", "github", "amazon", "paypal", "apple", "microsoft",
+    "facebook", "instagram", "whatsapp", "linkedin", "twitter", "reddit",
+    "netflix", "adobe", "bankofamerica", "chase", "wellsfargo", "citibank",
+}
+
+
+def _heuristic_adjustment(url: str, feats: Dict[str, Any]) -> Tuple[float, list]:
+    """
+    Return a probability adjustment and explanation reasons.
+    Positive values increase phishing risk; negative values reduce it.
+    """
+    norm = _normalize_url(url)
+    parsed = urlparse(norm)
+    host = (parsed.netloc or "").split("@")[-1].split(":")[0].lower()
+    ext = tldextract.extract(host)
+    registrable = ".".join(x for x in [ext.domain, ext.suffix] if x)
+
+    adjustment = 0.0
+    reasons = []
+
+    if feats.get("has_ip", 0) == 1 or feats.get("has_hex_ip", 0) == 1:
+        adjustment += 0.25
+        reasons.append("ip_host")
+    if feats.get("has_at_symbol", 0) == 1:
+        adjustment += 0.20
+        reasons.append("at_symbol")
+    if feats.get("has_punycode", 0) == 1:
+        adjustment += 0.15
+        reasons.append("punycode")
+    if feats.get("double_slash_after_scheme", 0) == 1:
+        adjustment += 0.10
+        reasons.append("double_slash_after_scheme")
+    if feats.get("is_suspicious_tld", 0) == 1:
+        adjustment += 0.12
+        reasons.append("suspicious_tld")
+    if feats.get("http_count", 0) >= 2 or feats.get("has_http_in_path", 0) == 1:
+        adjustment += 0.10
+        reasons.append("embedded_http")
+    if feats.get("sensitive_token_hits", 0) >= 2:
+        adjustment += 0.12
+        reasons.append("sensitive_tokens")
+    if feats.get("host_has_hyphen", 0) == 1 and feats.get("brand_word_hits", 0) >= 2:
+        adjustment += 0.18
+        reasons.append("hyphen_plus_brand_bait")
+    if feats.get("is_shortener", 0) == 1 and feats.get("sensitive_token_hits", 0) >= 1:
+        adjustment += 0.10
+        reasons.append("shortener_with_sensitive_path")
+
+    # Brand impersonation signal: brand appears in host, but registered domain is different.
+    for brand in BRAND_DOMAINS:
+        if brand in host and brand not in (ext.domain or ""):
+            adjustment += 0.35
+            reasons.append(f"brand_impersonation:{brand}")
+            break
+
+    # Keep post-model adjustment bounded.
+    adjustment = max(-0.25, min(0.45, adjustment))
+    return adjustment, reasons
 
 
 def _normalize_url(url: str) -> str:
@@ -41,14 +119,18 @@ def _load_artifacts() -> Tuple[Any, list, Any]:
     """
     global _MODEL, _FEATURE_COLUMNS, _SCALER
 
-    if _MODEL is None or _FEATURE_COLUMNS is None or _SCALER is None:
-        # Try to load the v5 model first (which addresses dataset bias)
-        model_path = MODELS_DIR / "phishing_model_v5.pkl"
-        cols_path = MODELS_DIR / "feature_columns_v5.pkl"
-        scaler_path = MODELS_DIR / "feature_scaler_v5.pkl"
+    if _MODEL is None or _FEATURE_COLUMNS is None:
+        # Prefer v6 first, then fallback to older artifacts.
+        model_path = MODELS_DIR / "phishing_model_v6.pkl"
+        cols_path = MODELS_DIR / "feature_columns_v6.pkl"
+        scaler_path = None
 
         if not model_path.exists():
-            # Fallback to v4 model if v5 doesn't exist
+            model_path = MODELS_DIR / "phishing_model_v5.pkl"
+            cols_path = MODELS_DIR / "feature_columns_v5.pkl"
+            scaler_path = MODELS_DIR / "feature_scaler_v5.pkl"
+
+        if not model_path.exists():
             model_path = MODELS_DIR / "phishing_model_v4.pkl"
             cols_path = MODELS_DIR / "feature_columns_v4.pkl"
             scaler_path = MODELS_DIR / "feature_scaler.pkl"
@@ -65,8 +147,8 @@ def _load_artifacts() -> Tuple[Any, list, Any]:
         _MODEL = joblib.load(model_path)
         _FEATURE_COLUMNS = joblib.load(cols_path)
         
-        # Load scaler if it exists
-        if scaler_path.exists():
+        # Load scaler if it exists for chosen model version.
+        if scaler_path is not None and scaler_path.exists():
             _SCALER = joblib.load(scaler_path)
         else:
             _SCALER = None
@@ -131,7 +213,7 @@ def _top_feature_hints(model: Any, feature_columns: list, X: pd.DataFrame, top_k
 
 def predict_url(
     url: str,
-    threshold: float = 0.5,
+    threshold: float = 0.85,
     debug: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -170,70 +252,54 @@ def predict_url(
     # Clamp to valid range (safety)
     raw_proba = max(0.0, min(1.0, raw_proba))
     
-    # Apply bias correction to handle dataset overfitting
-    # The original dataset has a bias where longer URLs are more likely to be phishing
-    url_len = len(url)
-    domain = url.split('/')[2] if '//' in url else url.split('/')[0] if '/' in url else url
-    path_and_query = url[len(domain) + (7 if url.startswith('https://') else 6):] if '//' in url else ''
-        
-    # Identify known legitimate domains
-    known_legitimate_domains = [
-        'google.com', 'www.google.com', 'youtube.com', 'www.youtube.com',
-        'github.com', 'www.github.com', 'amazon.com', 'www.amazon.com',
-        'ebay.com', 'www.ebay.com', 'stackoverflow.com', 'www.stackoverflow.com',
-        'facebook.com', 'www.facebook.com', 'twitter.com', 'www.twitter.com',
-        'linkedin.com', 'www.linkedin.com', 'reddit.com', 'www.reddit.com',
-        'wikipedia.org', 'www.wikipedia.org', 'apple.com', 'www.apple.com',
-        'microsoft.com', 'www.microsoft.com', 'adobe.com', 'www.adobe.com',
-        'oracle.com', 'www.oracle.com', 'docs.oracle.com', 'www.docs.oracle.com',
-        'apple.com', 'www.apple.com', 'nytimes.com', 'www.nytimes.com',
-        'cnn.com', 'www.cnn.com', 'bbc.com', 'www.bbc.com',
-        'amazonaws.com', 'www.amazonaws.com', 'cloudflare.com', 'www.cloudflare.com'
-    ]
-        
-    # Calculate correction factors
-    length_factor = min(url_len / 100.0, 1.0)  # Normalize length impact
-        
-    # Check for legitimate indicators
-    has_known_domain = any(known_domain in domain for known_domain in known_legitimate_domains)
-    has_common_tld = any(common in domain for common in ['.com', '.org', '.net', '.edu', '.gov'])
-    has_common_path = any(common in path_and_query for common in ['/login', '/register', '/api', '/docs', '/watch', '/product', '/sch', '/item'])
-        
-    # Apply corrections based on legitimate indicators
-    correction = 0.0
-    if has_known_domain:
-        correction = -0.6  # Strong reduction for known legitimate domains
-    elif has_common_tld and url_len <= 50:
-        correction = -0.3  # Reduce phishing probability for short common domains
-    elif has_common_tld and url_len <= 80 and has_common_path:
-        correction = -0.4  # Reduce for common domains with common paths
-    elif has_common_tld and has_common_path:
-        correction = -0.25  # Moderate reduction for common domains with common paths
-        
-    # Apply correction but keep within bounds
-    corrected_proba = max(0.0, min(1.0, raw_proba + correction))
-        
-    # Adjust decision based on corrected probability
-    adjusted_threshold = threshold
-    if has_known_domain:
-        # For known legitimate domains, be very conservative
-        adjusted_threshold = 0.8
-    elif has_common_tld and url_len <= 50:
-        # For short, common domains, be more conservative
-        adjusted_threshold = 0.7
-    elif url_len > 100 and not has_known_domain:
-        # For very long URLs that aren't known domains, be more aggressive
-        adjusted_threshold = 0.3
-        
-    # Decision with adjustments
-    pred = 1 if corrected_proba >= adjusted_threshold else 0
-    
-    # Store values for output
-    proba = corrected_proba  # Use corrected probability for risk score
-    final_threshold = adjusted_threshold
+    heuristic_adj, heuristic_reasons = _heuristic_adjustment(url, feats)
+    adjusted_proba = max(0.0, min(1.0, raw_proba + heuristic_adj))
+
+    # Trusted-domain override (exact registrable domain match only).
+    norm = _normalize_url(url)
+    parsed = urlparse(norm)
+    host = (parsed.netloc or "").split("@")[-1].split(":")[0].lower()
+    ext = tldextract.extract(host)
+    registrable = ".".join(x for x in [ext.domain, ext.suffix] if x)
+    has_brand_impersonation = any(r.startswith("brand_impersonation:") for r in heuristic_reasons)
+    strong_suspicious = (
+        feats.get("has_ip", 0) == 1
+        or feats.get("has_hex_ip", 0) == 1
+        or feats.get("has_at_symbol", 0) == 1
+        or feats.get("has_punycode", 0) == 1
+        or feats.get("is_suspicious_tld", 0) == 1
+        or has_brand_impersonation
+    )
+    if registrable in TRUSTED_REGISTRABLE_DOMAINS and not strong_suspicious:
+        adjusted_proba = min(adjusted_proba, 0.15)
+        heuristic_reasons.append("trusted_domain_override")
+    else:
+        # Conservative benign-profile reduction for non-trusted domains.
+        tld = (ext.suffix or "").split(".")[-1].lower() if ext.suffix else ""
+        common_tld = tld in {"com", "org", "net", "edu", "gov", "io", "co", "in"}
+        benign_profile = (
+            common_tld
+            and feats.get("is_https", 0) == 1
+            and feats.get("is_valid_url", 0) == 1
+            and feats.get("has_ip", 0) == 0
+            and feats.get("has_hex_ip", 0) == 0
+            and feats.get("has_at_symbol", 0) == 0
+            and feats.get("has_punycode", 0) == 0
+            and feats.get("is_suspicious_tld", 0) == 0
+            and feats.get("double_slash_after_scheme", 0) == 0
+            and feats.get("is_shortener", 0) == 0
+            and feats.get("host_has_hyphen", 0) == 0
+            and feats.get("brand_word_hits", 0) == 0
+            and feats.get("sensitive_token_hits", 0) == 0
+        )
+        if benign_profile:
+            adjusted_proba = max(0.0, adjusted_proba - 0.18)
+            heuristic_reasons.append("benign_profile_adjustment")
+
+    pred = 1 if adjusted_proba >= threshold else 0
 
     resp: Dict[str, Any] = {
-        "risk_score": round(proba, 6),
+        "risk_score": round(adjusted_proba, 6),
         "prediction": pred,
         "label": "phishing" if pred == 1 else "legitimate",
         "features": feats,
@@ -243,8 +309,10 @@ def predict_url(
         resp["debug"] = {
             "normalized_url": _normalize_url(url),
             "threshold": threshold,
-            "adjusted_threshold": final_threshold,
-            "raw_probability": proba,
+            "raw_probability": round(raw_proba, 6),
+            "heuristic_adjustment": round(heuristic_adj, 6),
+            "adjusted_probability": round(adjusted_proba, 6),
+            "heuristic_reasons": heuristic_reasons,
             "top_feature_hints": _top_feature_hints(model, feature_columns, X),
             "feature_row_preview": X.iloc[0].to_dict(),
         }

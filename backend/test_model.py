@@ -10,7 +10,7 @@ urls = [
 ]
 
 for u in urls:
-    r = predict_url(u, threshold=0.5, debug=True)
+    r = predict_url(u, threshold=0.85, debug=True)
     print("\nURL:", u)
     print("Label:", r["label"], "| Risk:", r["risk_score"])
     if "debug" in r:

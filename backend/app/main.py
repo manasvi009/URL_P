@@ -100,7 +100,7 @@ class PredictRequest(BaseModel):
     url: str = Field(..., examples=["https://example.com/login?verify=true"])
     include_features: bool = True
     include_llm_explanation: bool = True
-    threshold: float = Field(0.5, ge=0.0, le=1.0)
+    threshold: float = Field(0.85, ge=0.0, le=1.0)
 
 
 class Token(BaseModel):
@@ -161,7 +161,7 @@ class PredictRequest(BaseModel):
     url: str = Field(..., examples=["https://example.com/login?verify=true"])
     include_features: bool = True
     include_llm_explanation: bool = True
-    threshold: float = Field(0.5, ge=0.0, le=1.0)
+    threshold: float = Field(0.85, ge=0.0, le=1.0)
 
 
 class PredictResponse(BaseModel):
